@@ -5,23 +5,26 @@
 #include "dcocal.h"
 #include "uart.h"
 
-#define LED BIT6
-#define PIN_S2 BIT3
-
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 
 enum Channels {
 	CH_R = INCH_0,
 	CH_G = INCH_2,
-	CH_B = INCH_5, // TODO back to 3?
+	CH_B = INCH_3,
 	CH_L = INCH_4
 };
 
-enum OutputPins {
-	OUT_R = 1 << 5,
-	OUT_G = 1 << 6,
-	OUT_B = 1 << 7,
+enum Port1Pins {
+	IN_R = BIT0,
+	IN_G = BIT2,
+	//IN_B = BIT3,	// TODO enable
+	BUTTON  = BIT3,	// TODO move
+	IN_L = BIT4,
+	OUT_R = BIT5,
+	OUT_G = BIT6,
+	LED   = BIT6,
+	OUT_B = BIT7,
 };
 
 struct {
@@ -43,13 +46,13 @@ void initClocks() {
 }
 
 void initAdc() {
-	// internal 1.5V reference, inputs on P1.0, 1.2, 1.3, 1.4
+	// internal 1.5V reference
 	ADC10CTL0 = SREF_1 + ADC10SHT_2 + REFON + ADC10ON + ADC10IE;
-	ADC10AE0 = BIT0 | BIT2 | BIT5 | BIT4;
+	ADC10AE0 = IN_R | IN_G; // | IN_B | IN_L;	// TODO
 }
 
 void initPins() {
-	// red, green, blue, and TXD outputs
+	// red, green, blue, TX and LED outputs
 	P1DIR = OUT_R | OUT_G | OUT_B | UART_PIN | LED;
 }
 
@@ -58,12 +61,13 @@ void sample(int channel) {
 	adcSampling = channel;
 	ADC10CTL1 = channel;
 	ADC10CTL0 |= ENC + ADC10SC;             // Sampling and conversion start
+	//LPM0;
 	__bis_SR_register(CPUOFF + GIE);        // LPM0 until the sampling completes
 }
 
 void sampleDone(int channel, int value) {
-	printx("Ch: ", channel);
-	printv("Val:", value);
+	//printx("Ch: ", channel);
+	//printv("Val:", value);
 
 	switch (channel) {
 		case CH_R:
@@ -77,11 +81,14 @@ void sampleDone(int channel, int value) {
 			break;
 
 		case CH_B:
-			printv("B: ", pwm.b);
 			pwm.b = MIN(255, value);
-			//printv("R: ", pwm.r);
-			//printv("G: ", pwm.g);
-			printv("B: ", pwm.b);
+			prints("RGB ");
+			printi(pwm.r, 10);
+			prints(" ");
+			printi(pwm.g, 10);
+			prints(" ");
+			printi(pwm.b, 10);
+			prints("\n");
 			samplingBusy = false;
 			break;
 
@@ -113,21 +120,27 @@ int main(void)
 	initPins();
 	prints("init\n");
 
-	P1REN |= PIN_S2;
-	P1OUT |= PIN_S2;
-	P1IFG &= ~PIN_S2;
+	P1REN |= BUTTON;
+	P1OUT |= BUTTON;
+	P1IFG &= ~BUTTON;
+	__eint();
 
 	for (;;) {
-		P1IE |= PIN_S2;
-		//__bis_SR_register(CPUOFF + GIE);        // sleep until button pressed
+		// sleep until button pressed
+		P1IE |= BUTTON;
 		LPM0;
 		prints("go!\n");
-		P1IE &= ~PIN_S2;	// button off
+		// button off
+		P1IE &= ~BUTTON;
+
+		// sample - TODO move to interrupt handler
 		samplingBusy = true;
 		sample(CH_R);
 		while (samplingBusy) {
 			LPM0;
 		}
+		// button on
+		P1IE |= BUTTON;
 	}
 
 	return 0;
@@ -135,19 +148,15 @@ int main(void)
 
 __attribute__((interrupt(PORT1_VECTOR)))
 void p1() {
-	if (P1IFG & PIN_S2) {
-		P1IFG &= ~PIN_S2;
+	if (P1IFG & BUTTON) {
+		P1IFG &= ~BUTTON;
 		prints("button\n");
-		if (!samplingBusy) {
-		}
-
 		LPM0_EXIT;
 	}
 }
 
 __attribute__((interrupt(ADC10_VECTOR)))
 void adc10() {
-	//__bic_SR_register_on_exit(CPUOFF);        // Clear CPUOFF bit from 0(SR)
 	LPM0_EXIT;
 	sampleDone(adcSampling, ADC10MEM);
 }
