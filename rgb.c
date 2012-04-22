@@ -20,12 +20,15 @@ enum Port1Pins {
 	IN_G = BIT2,
 	//IN_B = BIT3,	// TODO enable
 	BUTTON  = BIT3,	// TODO move
+	VSYNC = BIT3,	// TODO
 	IN_L = BIT4,
 	OUT_R = BIT5,
 	OUT_G = BIT6,
 	LED   = BIT6,
 	OUT_B = BIT7,
 };
+
+#define PWM_DELAY 1000
 
 struct {
 	uint8_t count;
@@ -47,7 +50,7 @@ void initClocks() {
 
 void initAdc() {
 	// internal 1.5V reference
-	ADC10CTL0 = SREF_1 + ADC10SHT_2 + REFON + ADC10ON + ADC10IE;
+	ADC10CTL0 = SREF_1 | ADC10SHT_2 | REFON | ADC10ON | ADC10IE;
 	ADC10AE0 = IN_R | IN_G; // | IN_B | IN_L;	// TODO
 }
 
@@ -56,32 +59,39 @@ void initPins() {
 	P1DIR = OUT_R | OUT_G | OUT_B | UART_PIN | LED;
 }
 
+void buttonOn() {
+	P1REN |= BUTTON;
+	P1OUT |= BUTTON;
+	P1IFG &= ~BUTTON;
+	P1IE |= BUTTON;
+}
+
 void sample(int channel) {
-	printx("Sample ", channel);
 	adcSampling = channel;
 	ADC10CTL1 = channel;
-	ADC10CTL0 |= ENC + ADC10SC;             // Sampling and conversion start
-	//LPM0;
-	__bis_SR_register(CPUOFF + GIE);        // LPM0 until the sampling completes
+	ADC10CTL0 |= ENC + ADC10SC;             // sampling and conversion start
+}
+
+uint8_t convert(int adc) {
+	// TODO: account for brightness setting
+	// TODO: "snap" low values to zero?
+	return adc/4;
 }
 
 void sampleDone(int channel, int value) {
-	//printx("Ch: ", channel);
-	//printv("Val:", value);
-
 	switch (channel) {
 		case CH_R:
-			pwm.r = MIN(255, value);
+			pwm.r = convert(value);
 			sample(CH_G);
 			break;
 
 		case CH_G:
-			pwm.g = MIN(255, value);
+			pwm.g = convert(value);
 			sample(CH_B);
 			break;
 
 		case CH_B:
-			pwm.b = MIN(255, value);
+			pwm.b = convert(value);
 			prints("RGB ");
 			printi(pwm.r, 10);
 			prints(" ");
@@ -94,7 +104,6 @@ void sampleDone(int channel, int value) {
 
 		case CH_L:
 			pwm.l = value;
-			//sample(CH_R);
 			break;
 	}	
 }
@@ -120,44 +129,46 @@ int main(void)
 	initPins();
 	prints("init\n");
 
-	P1REN |= BUTTON;
-	P1OUT |= BUTTON;
-	P1IFG &= ~BUTTON;
+	buttonOn();
 	__eint();
 
-	for (;;) {
-		// sleep until button pressed
-		P1IE |= BUTTON;
-		LPM0;
-		prints("go!\n");
-		// button off
-		P1IE &= ~BUTTON;
-
-		// sample - TODO move to interrupt handler
-		samplingBusy = true;
-		sample(CH_R);
-		while (samplingBusy) {
-			LPM0;
-		}
-		// button on
-		P1IE |= BUTTON;
+	while (true) {
+		doPwm();
+		__delay_cycles(PWM_DELAY);
 	}
 
 	return 0;
 }
 
+void startSampling() {
+	if (!samplingBusy) {
+		samplingBusy = true;
+		sample(CH_R);
+	}
+}
+
+bool testInterruptFlag(int mask) {
+	if (P1IFG & mask) {
+		P1IFG &= ~mask;
+		return true;
+	}
+
+	return false;
+}
+
 __attribute__((interrupt(PORT1_VECTOR)))
 void p1() {
-	if (P1IFG & BUTTON) {
-		P1IFG &= ~BUTTON;
-		prints("button\n");
-		LPM0_EXIT;
+	if (testInterruptFlag(BUTTON)) {
+		prints("button pressed\n");
+		startSampling();
+	} else if (testInterruptFlag(VSYNC)) {
+		startSampling();
 	}
 }
 
 __attribute__((interrupt(ADC10_VECTOR)))
 void adc10() {
-	LPM0_EXIT;
+	//LPM0_EXIT;
 	sampleDone(adcSampling, ADC10MEM);
 }
 
